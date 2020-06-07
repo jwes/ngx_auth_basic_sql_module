@@ -17,47 +17,36 @@
 typedef struct {
     ngx_http_complex_value_t  *realm;
     ngx_http_complex_value_t   user_file;
-} ngx_http_auth_basic_loc_conf_t;
+} ngx_http_auth_basic_sql_loc_conf_t;
 
 
-static ngx_int_t ngx_http_auth_basic_handler(ngx_http_request_t *r);
-static ngx_int_t ngx_http_auth_basic_crypt_handler(ngx_http_request_t *r,
+static ngx_int_t ngx_http_auth_basic_sql_handler(ngx_http_request_t *r);
+static ngx_int_t ngx_http_auth_basic_sql_crypt_handler(ngx_http_request_t *r,
     ngx_str_t *passwd, ngx_str_t *realm);
-static ngx_int_t ngx_http_auth_basic_set_realm(ngx_http_request_t *r,
+static ngx_int_t ngx_http_auth_basic_sql_set_realm(ngx_http_request_t *r,
     ngx_str_t *realm);
-static void *ngx_http_auth_basic_create_loc_conf(ngx_conf_t *cf);
-static char *ngx_http_auth_basic_merge_loc_conf(ngx_conf_t *cf,
+static void *ngx_http_auth_basic_sql_create_loc_conf(ngx_conf_t *cf);
+static char *ngx_http_auth_basic_sql_merge_loc_conf(ngx_conf_t *cf,
     void *parent, void *child);
-static ngx_int_t ngx_http_auth_basic_init(ngx_conf_t *cf);
-static char *ngx_http_auth_basic_user_file(ngx_conf_t *cf, ngx_command_t *cmd,
-    void *conf);
+static ngx_int_t ngx_http_auth_basic_sql_init(ngx_conf_t *cf);
 
+static ngx_command_t  ngx_http_auth_basic_sql_commands[] = {
 
-static ngx_command_t  ngx_http_auth_basic_commands[] = {
-
-    { ngx_string("auth_basic"),
+    { ngx_string("auth_basic_sql"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF
                         |NGX_CONF_TAKE1,
       ngx_http_set_complex_value_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
-      offsetof(ngx_http_auth_basic_loc_conf_t, realm),
-      NULL },
-
-    { ngx_string("auth_basic_user_file"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF
-                        |NGX_CONF_TAKE1,
-      ngx_http_auth_basic_user_file,
-      NGX_HTTP_LOC_CONF_OFFSET,
-      offsetof(ngx_http_auth_basic_loc_conf_t, user_file),
+      offsetof(ngx_http_auth_basic_sql_loc_conf_t, realm),
       NULL },
 
       ngx_null_command
 };
 
 
-static ngx_http_module_t  ngx_http_auth_basic_module_ctx = {
+static ngx_http_module_t  ngx_http_auth_basic_sql_module_ctx = {
     NULL,                                  /* preconfiguration */
-    ngx_http_auth_basic_init,              /* postconfiguration */
+    ngx_http_auth_basic_sql_init,          /* postconfiguration */
 
     NULL,                                  /* create main configuration */
     NULL,                                  /* init main configuration */
@@ -65,15 +54,15 @@ static ngx_http_module_t  ngx_http_auth_basic_module_ctx = {
     NULL,                                  /* create server configuration */
     NULL,                                  /* merge server configuration */
 
-    ngx_http_auth_basic_create_loc_conf,   /* create location configuration */
-    ngx_http_auth_basic_merge_loc_conf     /* merge location configuration */
+    ngx_http_auth_basic_sql_create_loc_conf,   /* create location configuration */
+    ngx_http_auth_basic_sql_merge_loc_conf     /* merge location configuration */
 };
 
 
-ngx_module_t  ngx_http_auth_basic_module = {
+ngx_module_t  ngx_http_auth_basic_sql_module = {
     NGX_MODULE_V1,
-    &ngx_http_auth_basic_module_ctx,       /* module context */
-    ngx_http_auth_basic_commands,          /* module directives */
+    &ngx_http_auth_basic_sql_module_ctx,   /* module context */
+    ngx_http_auth_basic_sql_commands,      /* module directives */
     NGX_HTTP_MODULE,                       /* module type */
     NULL,                                  /* init master */
     NULL,                                  /* init module */
@@ -87,7 +76,7 @@ ngx_module_t  ngx_http_auth_basic_module = {
 
 
 static ngx_int_t
-ngx_http_auth_basic_handler(ngx_http_request_t *r)
+ngx_http_auth_basic_sql_handler(ngx_http_request_t *r)
 {
     off_t                            offset;
     ssize_t                          n;
@@ -97,7 +86,7 @@ ngx_http_auth_basic_handler(ngx_http_request_t *r)
     ngx_str_t                        pwd, realm, user_file;
     ngx_uint_t                       i, level, login, left, passwd;
     ngx_file_t                       file;
-    ngx_http_auth_basic_loc_conf_t  *alcf;
+    ngx_http_auth_basic_sql_loc_conf_t  *alcf;
     u_char                           buf[NGX_HTTP_AUTH_BUF_SIZE];
     enum {
         sw_login,
@@ -105,7 +94,7 @@ ngx_http_auth_basic_handler(ngx_http_request_t *r)
         sw_skip
     } state;
 
-    alcf = ngx_http_get_module_loc_conf(r, ngx_http_auth_basic_module);
+    alcf = ngx_http_get_module_loc_conf(r, ngx_http_auth_basic_sql_module);
 
     if (alcf->realm == NULL || alcf->user_file.value.data == NULL) {
         return NGX_DECLINED;
@@ -126,7 +115,7 @@ ngx_http_auth_basic_handler(ngx_http_request_t *r)
         ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
                       "no user/password was provided for basic authentication");
 
-        return ngx_http_auth_basic_set_realm(r, &realm);
+        return ngx_http_auth_basic_sql_set_realm(r, &realm);
     }
 
     if (rc == NGX_ERROR) {
@@ -221,7 +210,7 @@ ngx_http_auth_basic_handler(ngx_http_request_t *r)
                     pwd.len = i - passwd;
                     pwd.data = &buf[passwd];
 
-                    rc = ngx_http_auth_basic_crypt_handler(r, &pwd, &realm);
+                    rc = ngx_http_auth_basic_sql_crypt_handler(r, &pwd, &realm);
                     goto cleanup;
                 }
 
@@ -258,7 +247,7 @@ ngx_http_auth_basic_handler(ngx_http_request_t *r)
 
         ngx_cpystrn(pwd.data, &buf[passwd], pwd.len + 1);
 
-        rc = ngx_http_auth_basic_crypt_handler(r, &pwd, &realm);
+        rc = ngx_http_auth_basic_sql_crypt_handler(r, &pwd, &realm);
         goto cleanup;
     }
 
@@ -266,7 +255,7 @@ ngx_http_auth_basic_handler(ngx_http_request_t *r)
                   "user \"%V\" was not found in \"%s\"",
                   &r->headers_in.user, user_file.data);
 
-    rc = ngx_http_auth_basic_set_realm(r, &realm);
+    rc = ngx_http_auth_basic_sql_set_realm(r, &realm);
 
 cleanup:
 
@@ -282,7 +271,7 @@ cleanup:
 
 
 static ngx_int_t
-ngx_http_auth_basic_crypt_handler(ngx_http_request_t *r, ngx_str_t *passwd,
+ngx_http_auth_basic_sql_crypt_handler(ngx_http_request_t *r, ngx_str_t *passwd,
     ngx_str_t *realm)
 {
     ngx_int_t   rc;
@@ -310,12 +299,12 @@ ngx_http_auth_basic_crypt_handler(ngx_http_request_t *r, ngx_str_t *passwd,
                   "user \"%V\": password mismatch",
                   &r->headers_in.user);
 
-    return ngx_http_auth_basic_set_realm(r, realm);
+    return ngx_http_auth_basic_sql_set_realm(r, realm);
 }
 
 
 static ngx_int_t
-ngx_http_auth_basic_set_realm(ngx_http_request_t *r, ngx_str_t *realm)
+ngx_http_auth_basic_sql_set_realm(ngx_http_request_t *r, ngx_str_t *realm)
 {
     size_t   len;
     u_char  *basic, *p;
@@ -348,11 +337,11 @@ ngx_http_auth_basic_set_realm(ngx_http_request_t *r, ngx_str_t *realm)
 
 
 static void *
-ngx_http_auth_basic_create_loc_conf(ngx_conf_t *cf)
+ngx_http_auth_basic_sql_create_loc_conf(ngx_conf_t *cf)
 {
-    ngx_http_auth_basic_loc_conf_t  *conf;
+    ngx_http_auth_basic_sql_loc_conf_t  *conf;
 
-    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_auth_basic_loc_conf_t));
+    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_auth_basic_sql_loc_conf_t));
     if (conf == NULL) {
         return NULL;
     }
@@ -362,10 +351,10 @@ ngx_http_auth_basic_create_loc_conf(ngx_conf_t *cf)
 
 
 static char *
-ngx_http_auth_basic_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
+ngx_http_auth_basic_sql_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 {
-    ngx_http_auth_basic_loc_conf_t  *prev = parent;
-    ngx_http_auth_basic_loc_conf_t  *conf = child;
+    ngx_http_auth_basic_sql_loc_conf_t  *prev = parent;
+    ngx_http_auth_basic_sql_loc_conf_t  *conf = child;
 
     if (conf->realm == NULL) {
         conf->realm = prev->realm;
@@ -380,7 +369,7 @@ ngx_http_auth_basic_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
 
 static ngx_int_t
-ngx_http_auth_basic_init(ngx_conf_t *cf)
+ngx_http_auth_basic_sql_init(ngx_conf_t *cf)
 {
     ngx_http_handler_pt        *h;
     ngx_http_core_main_conf_t  *cmcf;
@@ -392,37 +381,7 @@ ngx_http_auth_basic_init(ngx_conf_t *cf)
         return NGX_ERROR;
     }
 
-    *h = ngx_http_auth_basic_handler;
+    *h = ngx_http_auth_basic_sql_handler;
 
     return NGX_OK;
-}
-
-
-static char *
-ngx_http_auth_basic_user_file(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
-{
-    ngx_http_auth_basic_loc_conf_t *alcf = conf;
-
-    ngx_str_t                         *value;
-    ngx_http_compile_complex_value_t   ccv;
-
-    if (alcf->user_file.value.data) {
-        return "is duplicate";
-    }
-
-    value = cf->args->elts;
-
-    ngx_memzero(&ccv, sizeof(ngx_http_compile_complex_value_t));
-
-    ccv.cf = cf;
-    ccv.value = &value[1];
-    ccv.complex_value = &alcf->user_file;
-    ccv.zero = 1;
-    ccv.conf_prefix = 1;
-
-    if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
-        return NGX_CONF_ERROR;
-    }
-
-    return NGX_CONF_OK;
 }
