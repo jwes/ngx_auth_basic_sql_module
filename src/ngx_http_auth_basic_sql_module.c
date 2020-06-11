@@ -2,6 +2,7 @@
 /*
  * Copyright (C) Igor Sysoev
  * Copyright (C) Nginx, Inc.
+ * Copyright (C) Johannes Westhuis
  */
 
 
@@ -10,13 +11,16 @@
 #include <ngx_http.h>
 #include <ngx_crypt.h>
 
+#include <postgresql/libpq-fe.h>
+
 
 #define NGX_HTTP_AUTH_BUF_SIZE  2048
 
 
 typedef struct {
     ngx_http_complex_value_t  *realm;
-    ngx_http_complex_value_t   user_file;
+    ngx_http_complex_value_t  *connstring;
+    ngx_http_complex_value_t  *query;
 } ngx_http_auth_basic_sql_loc_conf_t;
 
 
@@ -38,6 +42,22 @@ static ngx_command_t  ngx_http_auth_basic_sql_commands[] = {
       ngx_http_set_complex_value_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_auth_basic_sql_loc_conf_t, realm),
+      NULL },
+
+    { ngx_string("auth_basic_sql_connection_string"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF
+                        |NGX_CONF_TAKE1,
+      ngx_http_set_complex_value_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_auth_basic_sql_loc_conf_t, connstring),
+      NULL },
+
+    { ngx_string("auth_basic_sql_query"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF
+                        |NGX_CONF_TAKE1,
+      ngx_http_set_complex_value_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_auth_basic_sql_loc_conf_t, query),
       NULL },
 
       ngx_null_command
@@ -74,35 +94,49 @@ ngx_module_t  ngx_http_auth_basic_sql_module = {
     NGX_MODULE_V1_PADDING
 };
 
-
 static ngx_int_t
 ngx_http_auth_basic_sql_handler(ngx_http_request_t *r)
 {
-    off_t                            offset;
-    ssize_t                          n;
-    ngx_fd_t                         fd;
-    ngx_int_t                        rc;
-    ngx_err_t                        err;
-    ngx_str_t                        pwd, realm, user_file;
-    ngx_uint_t                       i, level, login, left, passwd;
-    ngx_file_t                       file;
+    ngx_int_t                        rc, num;
+    ngx_str_t                        pwd, realm, connstring, query;
+    ngx_uint_t                       pos, len, remaining;
     ngx_http_auth_basic_sql_loc_conf_t  *alcf;
-    u_char                           buf[NGX_HTTP_AUTH_BUF_SIZE];
-    enum {
-        sw_login,
-        sw_passwd,
-        sw_skip
-    } state;
+    unsigned char querybuf[4096];
+    unsigned char *match;
+    char *m, *buf, *value;
 
     alcf = ngx_http_get_module_loc_conf(r, ngx_http_auth_basic_sql_module);
 
-    if (alcf->realm == NULL || alcf->user_file.value.data == NULL) {
+    if (alcf->realm == NULL) {
         return NGX_DECLINED;
     }
-
+    if (alcf->connstring == NULL) {
+        return NGX_DECLINED;
+    }
     if (ngx_http_complex_value(r, alcf->realm, &realm) != NGX_OK) {
         return NGX_ERROR;
     }
+    if (ngx_http_complex_value(r, alcf->connstring, &connstring) != NGX_OK) {
+        return NGX_ERROR;
+    }
+    if (ngx_http_complex_value(r, alcf->query, &query) != NGX_OK) {
+        return NGX_ERROR;
+    }
+    match = ngx_strnstr(query.data, "%user%", query.len);
+    if (!match) {
+       ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "no user marker in query: %V", &query);
+       return NGX_ERROR;
+    }
+
+    pos = len = match - query.data;
+    ngx_memcpy(querybuf, query.data, pos); //copy everything up until the user part
+    querybuf[pos++] = '$';
+    querybuf[pos++] = '1';
+    len = query.len - (len + 6); // 6 for %user%
+    remaining = query.len - len;
+
+    ngx_memcpy(querybuf + pos, query.data + remaining, len);
+    querybuf[pos + len] = '\0';
 
     if (realm.len == 3 && ngx_strncmp(realm.data, "off", 3) == 0) {
         return NGX_DECLINED;
@@ -111,7 +145,6 @@ ngx_http_auth_basic_sql_handler(ngx_http_request_t *r)
     rc = ngx_http_auth_basic_user(r);
 
     if (rc == NGX_DECLINED) {
-
         ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
                       "no user/password was provided for basic authentication");
 
@@ -122,153 +155,48 @@ ngx_http_auth_basic_sql_handler(ngx_http_request_t *r)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    if (ngx_http_complex_value(r, &alcf->user_file, &user_file) != NGX_OK) {
-        return NGX_ERROR;
+    m = ngx_strchr(r->headers_in.user.data, ':');
+    if (!m) {
+       ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "no match in user str %s", r->headers_in.user.data);
+       return NGX_ERROR;
+    }
+    len = ((u_char*)m) -r->headers_in.user.data;
+
+    pwd.len = 0;
+    PGconn *pgconn = PQconnectdb((char*)connstring.data);
+    if (pgconn) {
+       buf = (char*)malloc(len + 1);
+       ngx_memcpy(buf, r->headers_in.user.data, len);
+       buf[len] = '\0';
+
+       PGresult *result = PQexecParams(pgconn, (const char*)querybuf, 1, NULL, (const char* const *) &buf, NULL, NULL, 0);
+       free(buf);
+       if (result) {
+          num = PQntuples(result);
+          if (num == 1) {
+             value = PQgetvalue(result, 0, 0);
+             if (value) {
+                pwd.len = strlen(value);
+                pwd.data = (u_char*) value;
+             }
+          } else {
+             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                "db query should return 1 result, but returned %d rows", num);
+          }
+          PQclear(result);
+       }
+       PQfinish(pgconn);
     }
 
-    fd = ngx_open_file(user_file.data, NGX_FILE_RDONLY, NGX_FILE_OPEN, 0);
 
-    if (fd == NGX_INVALID_FILE) {
-        err = ngx_errno;
-
-        if (err == NGX_ENOENT) {
-            level = NGX_LOG_ERR;
-            rc = NGX_HTTP_FORBIDDEN;
-
-        } else {
-            level = NGX_LOG_CRIT;
-            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        }
-
-        ngx_log_error(level, r->connection->log, err,
-                      ngx_open_file_n " \"%s\" failed", user_file.data);
-
-        return rc;
+    if (pwd.len) {
+       rc = ngx_http_auth_basic_sql_crypt_handler(r, &pwd, &realm);
+    } else {
+       rc = ngx_http_auth_basic_sql_set_realm(r, &realm);
     }
-
-    ngx_memzero(&file, sizeof(ngx_file_t));
-
-    file.fd = fd;
-    file.name = user_file;
-    file.log = r->connection->log;
-
-    state = sw_login;
-    passwd = 0;
-    login = 0;
-    left = 0;
-    offset = 0;
-
-    for ( ;; ) {
-        i = left;
-
-        n = ngx_read_file(&file, buf + left, NGX_HTTP_AUTH_BUF_SIZE - left,
-                          offset);
-
-        if (n == NGX_ERROR) {
-            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto cleanup;
-        }
-
-        if (n == 0) {
-            break;
-        }
-
-        for (i = left; i < left + n; i++) {
-            switch (state) {
-
-            case sw_login:
-                if (login == 0) {
-
-                    if (buf[i] == '#' || buf[i] == CR) {
-                        state = sw_skip;
-                        break;
-                    }
-
-                    if (buf[i] == LF) {
-                        break;
-                    }
-                }
-
-                if (buf[i] != r->headers_in.user.data[login]) {
-                    state = sw_skip;
-                    break;
-                }
-
-                if (login == r->headers_in.user.len) {
-                    state = sw_passwd;
-                    passwd = i + 1;
-                }
-
-                login++;
-
-                break;
-
-            case sw_passwd:
-                if (buf[i] == LF || buf[i] == CR || buf[i] == ':') {
-                    buf[i] = '\0';
-
-                    pwd.len = i - passwd;
-                    pwd.data = &buf[passwd];
-
-                    rc = ngx_http_auth_basic_sql_crypt_handler(r, &pwd, &realm);
-                    goto cleanup;
-                }
-
-                break;
-
-            case sw_skip:
-                if (buf[i] == LF) {
-                    state = sw_login;
-                    login = 0;
-                }
-
-                break;
-            }
-        }
-
-        if (state == sw_passwd) {
-            left = left + n - passwd;
-            ngx_memmove(buf, &buf[passwd], left);
-            passwd = 0;
-
-        } else {
-            left = 0;
-        }
-
-        offset += n;
-    }
-
-    if (state == sw_passwd) {
-        pwd.len = i - passwd;
-        pwd.data = ngx_pnalloc(r->pool, pwd.len + 1);
-        if (pwd.data == NULL) {
-            return NGX_HTTP_INTERNAL_SERVER_ERROR;
-        }
-
-        ngx_cpystrn(pwd.data, &buf[passwd], pwd.len + 1);
-
-        rc = ngx_http_auth_basic_sql_crypt_handler(r, &pwd, &realm);
-        goto cleanup;
-    }
-
-    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                  "user \"%V\" was not found in \"%s\"",
-                  &r->headers_in.user, user_file.data);
-
-    rc = ngx_http_auth_basic_sql_set_realm(r, &realm);
-
-cleanup:
-
-    if (ngx_close_file(file.fd) == NGX_FILE_ERROR) {
-        ngx_log_error(NGX_LOG_ALERT, r->connection->log, ngx_errno,
-                      ngx_close_file_n " \"%s\" failed", user_file.data);
-    }
-
-    ngx_explicit_memzero(buf, NGX_HTTP_AUTH_BUF_SIZE);
 
     return rc;
 }
-
 
 static ngx_int_t
 ngx_http_auth_basic_sql_crypt_handler(ngx_http_request_t *r, ngx_str_t *passwd,
@@ -358,10 +286,6 @@ ngx_http_auth_basic_sql_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child
 
     if (conf->realm == NULL) {
         conf->realm = prev->realm;
-    }
-
-    if (conf->user_file.value.data == NULL) {
-        conf->user_file = prev->user_file;
     }
 
     return NGX_CONF_OK;
