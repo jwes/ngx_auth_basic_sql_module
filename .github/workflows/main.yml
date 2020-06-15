@@ -16,3 +16,10 @@ jobs:
           # Source folder to check formatting
           source: './src'
           style: mozilla
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: jwes/nginx-module-build-action@master
+        with:
+          nginx-version: "release-1.18.0"
