@@ -5,6 +5,9 @@ ngx_basic_auth_sql_module is a `nginx` module that provides basic authentication
 
 It is a fork of the `nginx` auth_basic module. 
 
+[![Actions Status](https://github.com/jwes/ngx_auth_basic_sql_module/workflows/CI/badge.svg)](https://github.com/jwes/ngx_auth_basic_sql_module/actions)
+
+
 Configuration directives
 ========================
 auth_basic_sql
@@ -37,6 +40,7 @@ If you fail to do so, the authentication will be declined, due to the ambiguity.
 Example Configuration #1
 ========================
 
+```
 server {
         listen 80 default_server;
         listen [::]:80 default_server;
@@ -52,6 +56,7 @@ server {
                 try_files $uri $uri/ =404;
         }
 }
+```
 
 TODO
 ====
@@ -63,4 +68,4 @@ At the moment only `PostgreSQL` is supported.
 LICENSE
 =======
 
-BSD License: See LICENSE File
+BSD License: see LICENSE file
