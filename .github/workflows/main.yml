@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-      - uses: jwes/nginx-module-build-action@master
+      - uses: jwes/nginx-module-build-action@v0.1.0
         with:
           nginx-version: "release-1.18.0"
           additional-packages: "libpq-dev"
