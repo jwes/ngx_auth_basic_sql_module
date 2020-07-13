@@ -12,4 +12,3 @@ fi
 /etc/init.d/postgresql start
 
 prove
-bash

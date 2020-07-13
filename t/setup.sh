@@ -8,7 +8,7 @@ function clean_db {
 function setup_nginx {
   FILE=/etc/nginx/modules-enabled/77-mod-http-test.conf
   echo "" > $FILE
-  files=$(ls *.so)
+  files=$(find . -name '*.so')
   echo "found files $files"
   if [[ -n $files ]]; then
     for lib in $files; do

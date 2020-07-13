@@ -17,7 +17,7 @@ psql "host=localhost dbname=testdb user=tester password=secretPassword" -c "INSE
 
 setup_nginx
 
-echo "1..4"
+echo "1..6"
 #ok
 check_http alice@foo.ba:alice 1 200
 
@@ -31,8 +31,8 @@ check_http eve@foo.ba:eve 3 401
 check_http a2@foo.ba:alice 4 401
 
 #just pw in db
-check_http zack:alice 4 401
+check_http zack:alice 5 401
 
 #wrong combo
-check_http bob:alice 4 401
+check_http bob:alice 6 401
 
