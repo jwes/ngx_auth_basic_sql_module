@@ -1,0 +1,9 @@
+name: 'test nginx module with pgsql'
+description: 'test nginx modules'
+author: 'Johannes Westhuis'
+branding:
+  icon: 'octagon'
+  color: 'yellow'
+runs:
+  using: docker
+  image: 'Dockerfile'
